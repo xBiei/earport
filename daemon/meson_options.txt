@@ -1,0 +1,1 @@
+option('systemduserunitdir', type: 'string', value: '', description: 'systemd user unit dir; empty = prefix/lib/systemd/user')

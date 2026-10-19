@@ -2,12 +2,10 @@
 
 # EarPort
 
-AirPods integration for GNOME Shell on Linux. This project provides full support for Apple AirPods features including battery status, noise control modes, and automatic media pause on ear detection.
+Fork of EarPort for the xhypr desktop: daemon only, GNOME extension removed.
 
 ![GNOME 46+](https://img.shields.io/badge/GNOME-46%2B-blue)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
-
-<img src="extension.png" width="384" alt="The EarPort menu in GNOME Shell Quick Settings: AirPods Pro at 85 % and 82 %, case charging at 64 %, about 4:30 of listening left, noise cancellation on">
 
 > **New in 0.6: switch with your Apple devices (experimental).** Your AirPods
 > stay connected to the computer and to your iPhone, iPad or Mac at the same
@@ -30,7 +28,6 @@ AirPods integration for GNOME Shell on Linux. This project provides full support
 - **Switch with your Apple devices** (optional, experimental) - The AirPods move between the computer and your iPhone, iPad or Mac on their own, as between Apple devices, and stay connected to both, even when you take one AirPod out
 - **Remaining listening time** - Estimated from how fast your own AirPods discharge, learned over your listening sessions
 - **Ear detection** - Automatic media pause/resume when removing/inserting AirPods
-- **Pause when falling asleep** - When your AirPods notice you fell asleep, playback pauses after a 10-minute grace period, as on an iPhone, unless you use the computer meanwhile; players that allow it go back to where you dozed off (on models offering the setting, turned on in the AirPods settings)
 - **Quick Settings integration** - Native GNOME Shell Quick Settings panel
 - **Quick mode switching** - Click the Quick Settings tile or use a configurable keyboard shortcut (default `Super+Shift+N`) to cycle noise control modes, with OSD feedback
 - **Notifications** - Connection/disconnection and low battery notifications

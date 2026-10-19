@@ -62,12 +62,10 @@ sources = files(
     'src/device.c',
     'src/dbus_service.c',
     'src/handoff.c',
-    'src/link_trace.c',
+    'src/link_watch.c',
     'src/relink.c',
     'src/tipi.c',
     'src/media_control.c',
-    'src/research.c',
-    'src/sleep_pause.c',
 )
 
 # Build executable
@@ -128,7 +126,7 @@ test('device', test_device)
 # the test)
 test_aap_link = executable('test-aap-link',
     files('tests/test_aap_link.c', 'tests/fake_bluetooth.c', 'src/aap_link.c',
-          'src/aap_protocol.c', 'src/research.c', 'src/airpods_settings.c', 'src/airpods_state.c'),
+          'src/aap_protocol.c', 'src/airpods_settings.c', 'src/airpods_state.c'),
     include_directories: include_directories('src'),
     c_args: ['-DSEND_GAP_MS=2', '-DHANDSHAKE_DELAY_MS=4', '-DNOTIF_RETRY_INTERVAL_MS=20',
              '-DRECONNECT_BASE_DELAY_MS=10', '-DSILENT_RECONNECT_DELAY_MS=30',
@@ -141,7 +139,7 @@ test('aap-link', test_aap_link)
 # D-Bus service, controls, device and link together, on a private bus
 test_dbus = executable('test-dbus',
     files('tests/test_dbus.c', 'tests/fake_bluetooth.c', 'src/aap_link.c', 'src/controls.c',
-          'src/dbus_service.c', 'src/device.c', 'src/aap_protocol.c', 'src/research.c',
+          'src/dbus_service.c', 'src/device.c', 'src/aap_protocol.c',
           'src/airpods_settings.c', 'src/airpods_state.c', 'src/battery_estimator.c',
           'src/config.c', 'src/media_control.c'),
     include_directories: include_directories('src'),
@@ -163,15 +161,6 @@ test_media_control = executable('test-media-control',
     dependencies: [glib_dep, gio_dep],
 )
 test('media-control', test_media_control)
-
-test_sleep_pause = executable('test-sleep-pause',
-    files('tests/test_sleep_pause.c', 'src/sleep_pause.c', 'src/aap_protocol.c',
-          'src/airpods_settings.c', 'src/airpods_state.c'),
-    include_directories: include_directories('src'),
-    c_args: ['-DSLEEP_COOL_OFF_MS=1000'],
-    dependencies: [glib_dep],
-)
-test('sleep-pause', test_sleep_pause)
 
 test_handoff = executable('test-handoff',
     files('tests/test_handoff.c', 'src/handoff.c'),
@@ -207,11 +196,15 @@ service_conf = configuration_data()
 service_conf.set('bindir', get_option('prefix') / get_option('bindir'))
 
 # Install systemd user service
+systemd_user_unit_dir = get_option('systemduserunitdir')
+if systemd_user_unit_dir == ''
+    systemd_user_unit_dir = get_option('prefix') / 'lib' / 'systemd' / 'user'
+endif
 configure_file(
     input: 'data/earport-daemon.service.in',
     output: 'earport-daemon.service',
     configuration: service_conf,
-    install_dir: get_option('prefix') / 'lib' / 'systemd' / 'user',
+    install_dir: systemd_user_unit_dir,
 )
 
 # Install D-Bus service file
@@ -220,13 +213,4 @@ configure_file(
     output: 'io.github.anoryth.EarPort.service',
     configuration: service_conf,
     install_dir: get_option('datadir') / 'dbus-1' / 'services',
-)
-
-# Protocol probe for reverse-engineering (not installed):
-#   ninja -C build aap-probe
-executable('aap-probe',
-    files('tools/aap_probe.c'),
-    # The probe still uses libbluetooth's str2ba()
-    dependencies: [bluetooth_dep, cc.find_library('bluetooth', required: false)],
-    build_by_default: false,
 )

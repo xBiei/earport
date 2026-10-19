@@ -15,7 +15,6 @@
 #include <unistd.h>
 
 #define CONFIG_DIR_NAME "earport"
-#define LEGACY_CONFIG_DIR_NAME "librepods"  /* Pre-rename directory */
 #define CONFIG_FILE_NAME "daemon.conf"
 #define CONFIG_GROUP "Settings"
 
@@ -23,55 +22,6 @@ static gchar *get_config_dir(void)
 {
     const gchar *config_home = g_get_user_config_dir();
     return g_build_filename(config_home, CONFIG_DIR_NAME, NULL);
-}
-
-static bool ensure_config_dir(void);
-
-/* One-time migration of the configuration files from the project's former
- * name. The new directory may already exist but empty (systemd's
- * ConfigurationDirectory= pre-creates it), so migrate file by file as long
- * as the new config has not been written yet. */
-static void migrate_legacy_config_dir(void)
-{
-    static bool migration_checked = false;
-    static const char *config_files[] = {CONFIG_FILE_NAME, "devices.conf", NULL};
-
-    if (migration_checked)
-        return;
-    migration_checked = true;
-
-    gchar *new_dir = get_config_dir();
-    gchar *old_dir = g_build_filename(g_get_user_config_dir(),
-                                      LEGACY_CONFIG_DIR_NAME, NULL);
-    gchar *new_conf = g_build_filename(new_dir, CONFIG_FILE_NAME, NULL);
-
-    if (g_file_test(old_dir, G_FILE_TEST_IS_DIR) &&
-        !g_file_test(new_conf, G_FILE_TEST_EXISTS)) {
-        if (!ensure_config_dir())
-            goto out;
-
-        for (int i = 0; config_files[i] != NULL; i++) {
-            gchar *src = g_build_filename(old_dir, config_files[i], NULL);
-            gchar *dst = g_build_filename(new_dir, config_files[i], NULL);
-            if (g_file_test(src, G_FILE_TEST_EXISTS)) {
-                if (g_rename(src, dst) == 0) {
-                    g_message("Migrated %s to %s", src, dst);
-                } else {
-                    g_warning("Failed to migrate %s: %s", src, g_strerror(errno));
-                }
-            }
-            g_free(src);
-            g_free(dst);
-        }
-
-        /* Remove the old directory if now empty */
-        g_rmdir(old_dir);
-    }
-
-out:
-    g_free(new_conf);
-    g_free(old_dir);
-    g_free(new_dir);
 }
 
 static gchar *get_config_path(void)
@@ -105,15 +55,12 @@ void config_get_defaults(EarPortConfig *config)
     config->ear_pause_mode = 1;  /* EAR_PAUSE_ONE_OUT */
     config->auto_connect = false;
     config->apple_handoff = false;
-    config->research_log = false;
 }
 
 bool config_load(EarPortConfig *config)
 {
     /* Start with defaults */
     config_get_defaults(config);
-
-    migrate_legacy_config_dir();
 
     gchar *config_path = get_config_path();
     GKeyFile *keyfile = g_key_file_new();
@@ -150,9 +97,6 @@ bool config_load(EarPortConfig *config)
     if (g_key_file_has_key(keyfile, CONFIG_GROUP, "apple_handoff", NULL))
         config->apple_handoff = g_key_file_get_boolean(keyfile, CONFIG_GROUP, "apple_handoff", NULL);
 
-    if (g_key_file_has_key(keyfile, CONFIG_GROUP, "research_log", NULL))
-        config->research_log = g_key_file_get_boolean(keyfile, CONFIG_GROUP, "research_log", NULL);
-
     g_message("Config loaded: ear_pause_mode=%d auto_connect=%d apple_handoff=%d",
               config->ear_pause_mode, config->auto_connect, config->apple_handoff);
 
@@ -173,9 +117,6 @@ bool config_save(const EarPortConfig *config)
     g_key_file_set_integer(keyfile, CONFIG_GROUP, "ear_pause_mode", config->ear_pause_mode);
     g_key_file_set_boolean(keyfile, CONFIG_GROUP, "auto_connect", config->auto_connect);
     g_key_file_set_boolean(keyfile, CONFIG_GROUP, "apple_handoff", config->apple_handoff);
-    /* Hidden option: only kept when set */
-    if (config->research_log)
-        g_key_file_set_boolean(keyfile, CONFIG_GROUP, "research_log", true);
 
     /* Add comment */
     g_key_file_set_comment(keyfile, CONFIG_GROUP, NULL,

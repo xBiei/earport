@@ -135,13 +135,6 @@ void dbus_service_set_apple_handoff(DbusService *service, bool enabled);
  * keep quiet about the disconnection meanwhile */
 void dbus_service_set_reconnecting(DbusService *service, bool reconnecting);
 
-/* ResearchSend: a raw packet to the AirPods, only in research mode
- * (research_log=true); false if refused or not connected */
-typedef bool (*DbusRawCallback)(const uint8_t *data, size_t len, void *user_data);
-void dbus_service_set_research_send_callback(DbusService *service,
-                                             DbusRawCallback callback,
-                                             void *user_data);
-
 /* ClaimAudio: have the AirPods play from this computer */
 void dbus_service_set_claim_audio_callback(DbusService *service,
                                            DbusActionCallback callback,
@@ -192,9 +185,6 @@ void dbus_service_emit_ear_detection_changed(DbusService *service,
  * (true) or stopped (false) speaking. Clients lower/restore the volume.
  */
 void dbus_service_emit_speaking_changed(DbusService *service, bool speaking);
-
-/* Playback was paused because the user fell asleep (once per pause) */
-void dbus_service_emit_paused_for_sleep(DbusService *service);
 
 /**
  * Notify that a property has changed (emits PropertiesChanged)

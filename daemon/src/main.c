@@ -24,12 +24,10 @@
 #include "controls.h"
 #include "dbus_service.h"
 #include "handoff.h"
-#include "link_trace.h"
+#include "link_watch.h"
 #include "device.h"
 #include "media_control.h"
 #include "relink.h"
-#include "research.h"
-#include "sleep_pause.h"
 #include "tipi.h"
 
 /* Global application state */
@@ -47,14 +45,13 @@ typedef struct {
     BatteryProvider *battery_provider;
     AppleIdentity *apple_identity;
     Handoff *handoff;
-    LinkTrace *link_trace;
+    LinkWatch *link_watch;
     Tipi *tipi;
     Relink *relink;
     bool tipi_reconnecting;     /* Each announced as Reconnecting */
     bool relink_reconnecting;
     char *device_path;          /* AirPods' BlueZ object, kept after they left */
     char *adapter_path;          /* Adapter the AirPods are connected through */
-    SleepPause *sleep_pause;
 } AppContext;
 
 static AppContext app = {0};
@@ -234,79 +231,6 @@ static void publish_battery(void)
                             app.state.device_address, app.state.connected ? level : -1);
 }
 
-/* ============================================================================
- * Pause when falling asleep
- * ========================================================================== */
-
-static const AirPodsSettingDef *sleep_setting(void)
-{
-    return airpods_setting_by_key("SleepDetection");
-}
-
-/* Changed from the preferences: the AirPods won't announce it */
-static void on_setting_sent(uint8_t id, uint8_t value, void *user_data)
-{
-    (void)user_data;
-    if (id == sleep_setting()->id)
-        sleep_pause_setting_changed(app.sleep_pause, value == 0x01);
-}
-
-static void sleep_send(const uint8_t *data, size_t len, void *user_data)
-{
-    (void)user_data;
-    aap_link_send(app.link, data, len);
-}
-
-static bool sleep_is_enabled(void *user_data)
-{
-    (void)user_data;
-    uint8_t value;
-    return airpods_state_get_setting(&app.state, sleep_setting()->id, &value) && value == 0x01;
-}
-
-/* GNOME's idle time: input on this computer means the user is awake */
-static int64_t sleep_idle_ms(void *user_data)
-{
-    (void)user_data;
-    GDBusConnection *bus = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
-    if (bus == NULL)
-        return -1;
-
-    GVariant *reply = g_dbus_connection_call_sync(bus, "org.gnome.Mutter.IdleMonitor",
-                                                  "/org/gnome/Mutter/IdleMonitor/Core",
-                                                  "org.gnome.Mutter.IdleMonitor", "GetIdletime",
-                                                  NULL, G_VARIANT_TYPE("(t)"),
-                                                  G_DBUS_CALL_FLAGS_NONE, 1000, NULL, NULL);
-    g_object_unref(bus);
-    if (reply == NULL)
-        return -1;
-
-    guint64 idle = 0;
-    g_variant_get(reply, "(t)", &idle);
-    g_variant_unref(reply);
-    return (int64_t)idle;
-}
-
-static bool sleep_pause_announced;
-
-static void sleep_pause_media(int rewind_seconds, void *user_data)
-{
-    (void)user_data;
-    sleep_pause_announced = false;
-    media_control_pause_for_sleep(app.media_control, rewind_seconds);
-}
-
-/* Several players may be paused: one notification is enough */
-static void on_paused_for_sleep(const char *player, void *user_data)
-{
-    (void)player;
-    (void)user_data;
-    if (!sleep_pause_announced) {
-        sleep_pause_announced = true;
-        dbus_service_emit_paused_for_sleep(app.dbus_service);
-    }
-}
-
 /* What a Mac tells the AirPods on connection, so that they treat this
  * computer as one of the user's Apple devices and keep it */
 static void send_smart_routing_info(void)
@@ -330,16 +254,6 @@ static void on_link_packet(const AapParsedPacket *pkt, void *user_data)
         on_proximity_keys(&pkt->data.proximity_keys);
         return;
     }
-    if (pkt->type == AAP_PKT_TYPE_SLEEP_DETECTION) {
-        sleep_pause_handle(app.sleep_pause, &pkt->data.sleep_detection);
-        return;
-    }
-
-    /* The AirPods announce the setting on connection */
-    if (pkt->type == AAP_PKT_TYPE_CONTROL_SETTING &&
-        pkt->data.control_setting.id == sleep_setting()->id)
-        sleep_pause_setting_changed(app.sleep_pause, pkt->data.control_setting.value[0] == 0x01);
-
     device_handle_packet(&app.device, pkt);
 
     if (pkt->type == AAP_PKT_TYPE_BATTERY)
@@ -364,7 +278,6 @@ static void on_link_disconnected(void *user_data)
 {
     (void)user_data;
     battery_provider_update(app.battery_provider, NULL, NULL, -1);
-    sleep_pause_session_ended(app.sleep_pause);
     handoff_source_changed(app.handoff, NULL, false);
     device_session_ended(&app.device);
 }
@@ -428,7 +341,7 @@ static void on_bluez_device_connected(const BluezDeviceInfo *device, void *user_
     g_free(app.adapter_path);
     app.adapter_path = adapter_path;
     read_adapter_address(adapter_path);
-    link_trace_set_device(app.link_trace, device->object_path);
+    link_watch_set_device(app.link_watch, device->object_path);
     g_free(app.device_path);
     app.device_path = g_strdup(device->object_path);
 
@@ -478,24 +391,6 @@ static void on_set_auto_connect(bool enabled, void *user_data)
     config_save(&app.config);
     dbus_service_set_auto_connect(app.dbus_service, enabled);
     autoconnect_set_enabled(app.autoconnect, enabled);
-}
-
-/* Protocol experiments without stopping the service (research mode only) */
-static bool research_send(const uint8_t *data, size_t len, void *user_data)
-{
-    (void)user_data;
-    if (!app.config.research_log || len == 0 || !aap_link_is_connected(app.link)) {
-        g_message("Research: not sending (research mode %d, %zu bytes, connected %d)",
-                  app.config.research_log, len, aap_link_is_connected(app.link));
-        return false;
-    }
-
-    GString *hex = g_string_new(NULL);
-    for (size_t i = 0; i < len; i++)
-        g_string_append_printf(hex, "%s%02X", i ? " " : "", data[i]);
-    g_message("Research: sending %s", hex->str);
-    g_string_free(hex, TRUE);
-    return aap_link_send(app.link, data, len);
 }
 
 /* Like a Mac starting to play: have the AirPods switch to this computer */
@@ -672,8 +567,8 @@ static void cleanup(void)
     app.apple_identity = NULL;
     handoff_free(app.handoff);
     app.handoff = NULL;
-    link_trace_free(app.link_trace);
-    app.link_trace = NULL;
+    link_watch_free(app.link_watch);
+    app.link_watch = NULL;
     tipi_free(app.tipi);
     app.tipi = NULL;
     relink_free(app.relink);
@@ -681,8 +576,6 @@ static void cleanup(void)
     g_free(app.device_path);
     app.battery_provider = NULL;
     g_free(app.adapter_path);
-    sleep_pause_free(app.sleep_pause);
-    app.sleep_pause = NULL;
     autoconnect_free(app.autoconnect);
     app.autoconnect = NULL;
 
@@ -732,7 +625,6 @@ int main(int argc, char *argv[])
 
     /* Load configuration */
     config_load(&app.config);
-    research_set_enabled(app.config.research_log);
 
     /* Initialize state */
     airpods_state_init(&app.state);
@@ -757,7 +649,6 @@ int main(int argc, char *argv[])
     dbus_service_set_auto_connect(app.dbus_service, app.config.auto_connect);
     dbus_service_set_apple_handoff_callback(app.dbus_service, on_set_apple_handoff, NULL);
     dbus_service_set_claim_audio_callback(app.dbus_service, claim_audio, NULL);
-    dbus_service_set_research_send_callback(app.dbus_service, research_send, NULL);
     dbus_service_set_apple_handoff(app.dbus_service, app.config.apple_handoff);
 
     if (!dbus_service_start(app.dbus_service)) {
@@ -776,7 +667,6 @@ int main(int argc, char *argv[])
         media_control_set_ear_pause_mode(app.media_control, (EarPauseMode)app.config.ear_pause_mode);
         g_message("Media control enabled (ear_pause_mode=%d)", app.config.ear_pause_mode);
         media_control_set_playback_started_callback(app.media_control, on_playback_started, NULL);
-        media_control_set_paused_for_sleep_callback(app.media_control, on_paused_for_sleep, NULL);
     }
 
     device_init(&app.device, &app.state, app.dbus_service, app.media_control);
@@ -791,7 +681,7 @@ int main(int argc, char *argv[])
         .restart_audio = handoff_restart_audio,
     };
     app.handoff = handoff_new(&handoff_callbacks, NULL);
-    app.link_trace = link_trace_new();
+    app.link_watch = link_watch_new();
     static const TipiCallbacks tipi_callbacks = {
         .send = tipi_send,
         .reconnect = connect_airpods,
@@ -799,7 +689,7 @@ int main(int argc, char *argv[])
     };
     app.tipi = tipi_new(&tipi_callbacks, NULL);
     tipi_set_enabled(app.tipi, app.config.apple_handoff);
-    link_trace_set_closed_callback(app.link_trace, on_link_closed, NULL);
+    link_watch_set_closed_callback(app.link_watch, on_link_closed, NULL);
     static const RelinkCallbacks relink_callbacks = {
         .disconnect = disconnect_airpods,
         .connect = connect_airpods,
@@ -817,15 +707,6 @@ int main(int argc, char *argv[])
     };
     app.link = aap_link_new(&link_callbacks, NULL);
     controls_init(&app.controls, &app.device, app.link, app.dbus_service);
-    app.controls.setting_sent = on_setting_sent;
-
-    static const SleepPauseCallbacks sleep_callbacks = {
-        .send = sleep_send,
-        .is_enabled = sleep_is_enabled,
-        .idle_ms = sleep_idle_ms,
-        .pause_media = sleep_pause_media,
-    };
-    app.sleep_pause = sleep_pause_new(&sleep_callbacks, NULL);
 
     /* Create BlueZ monitor */
     app.bluez_monitor = bluez_monitor_new();

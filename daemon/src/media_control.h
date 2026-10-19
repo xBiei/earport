@@ -18,9 +18,6 @@ typedef struct MediaControl MediaControl;
 /* Called when any MPRIS player starts playing */
 typedef void (*MediaPlaybackStartedCallback)(void *user_data);
 
-/* Called for each player paused because the user fell asleep */
-typedef void (*MediaPausedForSleepCallback)(const char *player, void *user_data);
-
 /* Ear detection mode for auto-pause behavior */
 typedef enum {
     EAR_PAUSE_DISABLED = 0,    /* Don't pause on ear removal */
@@ -52,14 +49,6 @@ void media_control_pause_all(MediaControl *mc);
 /* Be told when a player starts playing (e.g. to connect the AirPods) */
 void media_control_set_playback_started_callback(MediaControl *mc,
                                                  MediaPlaybackStartedCallback callback,
-                                                 void *user_data);
-
-/* Pause the players playing because the user fell asleep: not resumed
- * when the AirPods go back in, and rewound by this many seconds */
-void media_control_pause_for_sleep(MediaControl *mc, int rewind_seconds);
-
-void media_control_set_paused_for_sleep_callback(MediaControl *mc,
-                                                 MediaPausedForSleepCallback callback,
                                                  void *user_data);
 
 /* Pause the players playing because another device took the AirPods: not
