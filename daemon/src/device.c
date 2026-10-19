@@ -7,6 +7,9 @@
 #include "config.h"
 
 #include <glib.h>
+#include <string.h>
+
+G_STATIC_ASSERT(AIRPODS_MAX_HOSTS >= AAP_MAX_HOSTS);
 
 /* ============================================================================
  * Remaining listening time
@@ -127,12 +130,42 @@ void device_session_ended(Device *dev)
     airpods_state_reset(dev->state);
     dbus_service_emit_properties_changed(dev->dbus, "Connected");
     dbus_service_emit_properties_changed(dev->dbus, "AudioSource");
+    dbus_service_emit_properties_changed(dev->dbus, "Hosts");
     dbus_service_emit_properties_changed(dev->dbus, "Settings");
 }
 
 /* ============================================================================
  * Packets from the AirPods
  * ========================================================================== */
+
+/* Strings from the AirPods go on D-Bus: UTF-8 only */
+static void copy_info_field(char *dst, const char *src, size_t size)
+{
+    g_strlcpy(dst, g_utf8_validate(src, -1, NULL) ? src : "", size);
+}
+
+static void update_info(Device *dev, const AapMetadata *metadata)
+{
+    AirPodsInfo info = { 0 };
+    copy_info_field(info.serial, metadata->serial, sizeof(info.serial));
+    copy_info_field(info.serial_left, metadata->serial_left, sizeof(info.serial_left));
+    copy_info_field(info.serial_right, metadata->serial_right, sizeof(info.serial_right));
+    copy_info_field(info.firmware, metadata->firmware, sizeof(info.firmware));
+    copy_info_field(info.firmware2, metadata->firmware2, sizeof(info.firmware2));
+    copy_info_field(info.hardware_revision, metadata->hardware_revision,
+                    sizeof(info.hardware_revision));
+    if (memcmp(&info, &dev->state->info, sizeof(info)) == 0)
+        return;
+
+    g_message("Firmware: %s (%s)", info.firmware, info.firmware2);
+    dev->state->info = info;
+    dbus_service_emit_properties_changed(dev->dbus, "SerialNumber");
+    dbus_service_emit_properties_changed(dev->dbus, "SerialLeft");
+    dbus_service_emit_properties_changed(dev->dbus, "SerialRight");
+    dbus_service_emit_properties_changed(dev->dbus, "FirmwareVersion");
+    dbus_service_emit_properties_changed(dev->dbus, "FirmwareVersion2");
+    dbus_service_emit_properties_changed(dev->dbus, "HardwareRevision");
+}
 
 void device_handle_packet(Device *dev, const AapParsedPacket *pkt)
 {
@@ -290,6 +323,16 @@ void device_handle_packet(Device *dev, const AapParsedPacket *pkt)
         }
         g_message("AirPods hosts (state %u): %s", pkt->data.hosts.state, line->str);
         g_string_free(line, TRUE);
+
+        dev->state->host_count = pkt->data.hosts.count;
+        for (uint8_t i = 0; i < pkt->data.hosts.count; i++) {
+            const AapHost *host = &pkt->data.hosts.hosts[i];
+            AirPodsHost *mine = &dev->state->hosts[i];
+            g_strlcpy(mine->address, host->address, sizeof(mine->address));
+            mine->connected = host->status == AAP_HOST_CONNECTED;
+            mine->playing = (host->flags & AAP_HOST_PLAYS) != 0;
+        }
+        dbus_service_emit_properties_changed(dev->dbus, "Hosts");
         break;
     }
 
@@ -332,6 +375,7 @@ void device_handle_packet(Device *dev, const AapParsedPacket *pkt)
                 dbus_service_emit_properties_changed(dev->dbus, "DisplayName");
             }
         }
+        update_info(dev, &pkt->data.metadata);
         break;
 
     default:

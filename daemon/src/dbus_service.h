@@ -37,6 +37,8 @@ typedef bool (*DbusListeningModesCallback)(bool off, bool transparency, bool anc
 
 /* Callback for display name change request */
 typedef void (*DbusDisplayNameCallback)(const char *name, void *user_data);
+/* Rename the AirPods themselves (name checked: 1 to 32 UTF-8 bytes) */
+typedef bool (*DbusRenameCallback)(const char *name, void *user_data);
 /* An action on the AirPods; false if they are not connected */
 typedef bool (*DbusActionCallback)(void *user_data);
 
@@ -139,6 +141,11 @@ void dbus_service_set_reconnecting(DbusService *service, bool reconnecting);
 void dbus_service_set_claim_audio_callback(DbusService *service,
                                            DbusActionCallback callback,
                                            void *user_data);
+
+/* Rename: the AirPods' own name, seen by every device */
+void dbus_service_set_rename_callback(DbusService *service,
+                                      DbusRenameCallback callback,
+                                      void *user_data);
 
 /**
  * Set callback for display name change requests

@@ -205,9 +205,25 @@ AapParseResult aap_parse_noise_control(const uint8_t *data, size_t len, NoiseCon
     return AAP_PARSE_OK;
 }
 
+/* One null-terminated string at *pos, cut to fit; *pos moves past it */
+static void read_string_field(const uint8_t *data, size_t len, size_t *pos, char *out, size_t size)
+{
+    size_t i = 0;
+    while (*pos < len && data[*pos] != '\0') {
+        if (i < size - 1)
+            out[i++] = data[*pos];
+        (*pos)++;
+    }
+    out[i] = '\0';
+    if (*pos < len)
+        (*pos)++;  /* Skip the null terminator */
+}
+
 static AapParseResult aap_parse_metadata(const uint8_t *data, size_t len, AapMetadata *metadata)
 {
-    /* Metadata packet: 04 00 04 00 1D 00 [5 bytes] [device_name\0] [model_number\0] [manufacturer\0] */
+    /* Metadata packet: 04 00 04 00 1D 00 [5 bytes] then null-separated
+     * strings: name, model number, manufacturer, serial, version 1,
+     * version 2, hardware revision, updater app, left and right serials... */
     if (len < 11)
         return AAP_PARSE_INCOMPLETE;
 
@@ -215,32 +231,19 @@ static AapParseResult aap_parse_metadata(const uint8_t *data, size_t len, AapMet
 
     /* Skip header (4) + opcode (1) + 00 (1) + 5 unknown bytes = position 11 */
     size_t pos = 11;
+    char updater[64];
 
-    /* Extract null-terminated strings */
-    size_t i;
-
-    /* Device name */
-    i = 0;
-    while (pos < len && data[pos] != '\0' && i < sizeof(metadata->device_name) - 1) {
-        metadata->device_name[i++] = data[pos++];
-    }
-    metadata->device_name[i] = '\0';
-    if (pos < len && data[pos] == '\0') pos++;  /* Skip null terminator */
-
-    /* Model number */
-    i = 0;
-    while (pos < len && data[pos] != '\0' && i < sizeof(metadata->model_number) - 1) {
-        metadata->model_number[i++] = data[pos++];
-    }
-    metadata->model_number[i] = '\0';
-    if (pos < len && data[pos] == '\0') pos++;
-
-    /* Manufacturer */
-    i = 0;
-    while (pos < len && data[pos] != '\0' && i < sizeof(metadata->manufacturer) - 1) {
-        metadata->manufacturer[i++] = data[pos++];
-    }
-    metadata->manufacturer[i] = '\0';
+    read_string_field(data, len, &pos, metadata->device_name, sizeof(metadata->device_name));
+    read_string_field(data, len, &pos, metadata->model_number, sizeof(metadata->model_number));
+    read_string_field(data, len, &pos, metadata->manufacturer, sizeof(metadata->manufacturer));
+    read_string_field(data, len, &pos, metadata->serial, sizeof(metadata->serial));
+    read_string_field(data, len, &pos, metadata->firmware, sizeof(metadata->firmware));
+    read_string_field(data, len, &pos, metadata->firmware2, sizeof(metadata->firmware2));
+    read_string_field(data, len, &pos, metadata->hardware_revision,
+                      sizeof(metadata->hardware_revision));
+    read_string_field(data, len, &pos, updater, sizeof(updater));
+    read_string_field(data, len, &pos, metadata->serial_left, sizeof(metadata->serial_left));
+    read_string_field(data, len, &pos, metadata->serial_right, sizeof(metadata->serial_right));
 
     return AAP_PARSE_OK;
 }
@@ -556,6 +559,21 @@ size_t aap_build_priority_list(const char *const *addresses, size_t count, uint8
             buffer[7 + i * 6 + j] = (uint8_t)b[5 - j];
     }
     return 7 + count * 6;
+}
+
+size_t aap_build_rename(const char *name, uint8_t *buffer, size_t buffer_size)
+{
+    size_t name_len = name != NULL ? strlen(name) : 0;
+    if (name_len == 0 || name_len > AAP_RENAME_MAX_NAME || buffer_size < 9 + name_len ||
+        !g_utf8_validate(name, (gssize)name_len, NULL))
+        return 0;
+
+    const uint8_t header[] = { 0x04, 0x00, 0x04, 0x00, AAP_OPCODE_RENAME, 0x00, 0x01 };
+    memcpy(buffer, header, sizeof(header));
+    buffer[7] = (uint8_t)name_len;
+    buffer[8] = 0x00;
+    memcpy(buffer + 9, name, name_len);
+    return 9 + name_len;
 }
 
 void aap_build_conv_awareness_cmd(bool enable, uint8_t *buffer)

@@ -366,6 +366,44 @@ static void test_metadata(void)
     g_assert_cmpstr(p.data.metadata.manufacturer, ==, "Apple Inc.");
 }
 
+/* Every field, in the order the AirPods send them (device-info.md of
+ * LibrePods); a packet cut after the manufacturer leaves the rest empty */
+static void test_metadata_full(void)
+{
+    const uint8_t header[] = { 0x04, 0x00, 0x04, 0x00, 0x1D, 0x00, 0x02, 0xDD, 0x00, 0x04, 0x00 };
+    const char strings[] = "AirPods Pro\0A3048\0Apple Inc.\0SERIALCASE\0V1\0V2\0001.0.0\0"
+                           "com.apple.accessory.updater.app.71\0SERIALL\0SERIALR\0008454371";
+    uint8_t pkt[sizeof(header) + sizeof(strings)];
+    AapParsedPacket p;
+
+    memcpy(pkt, header, sizeof(header));
+    memcpy(pkt + sizeof(header), strings, sizeof(strings));
+
+    g_assert_cmpint(PARSE(pkt, &p), ==, AAP_PARSE_OK);
+    g_assert_cmpint(p.type, ==, AAP_PKT_TYPE_METADATA);
+    g_assert_cmpstr(p.data.metadata.model_number, ==, "A3048");
+    g_assert_cmpstr(p.data.metadata.serial, ==, "SERIALCASE");
+    g_assert_cmpstr(p.data.metadata.firmware, ==, "V1");
+    g_assert_cmpstr(p.data.metadata.firmware2, ==, "V2");
+    g_assert_cmpstr(p.data.metadata.hardware_revision, ==, "1.0.0");
+    g_assert_cmpstr(p.data.metadata.serial_left, ==, "SERIALL");
+    g_assert_cmpstr(p.data.metadata.serial_right, ==, "SERIALR");
+
+    const char cut[] = "AirPods Pro\0A3048\0Apple Inc.";
+    uint8_t short_pkt[sizeof(header) + sizeof(cut) - 1];
+    memcpy(short_pkt, header, sizeof(header));
+    memcpy(short_pkt + sizeof(header), cut, sizeof(cut) - 1);
+
+    g_assert_cmpint(PARSE(short_pkt, &p), ==, AAP_PARSE_OK);
+    g_assert_cmpstr(p.data.metadata.manufacturer, ==, "Apple Inc.");
+    g_assert_cmpstr(p.data.metadata.serial, ==, "");
+    g_assert_cmpstr(p.data.metadata.firmware, ==, "");
+    g_assert_cmpstr(p.data.metadata.firmware2, ==, "");
+    g_assert_cmpstr(p.data.metadata.hardware_revision, ==, "");
+    g_assert_cmpstr(p.data.metadata.serial_left, ==, "");
+    g_assert_cmpstr(p.data.metadata.serial_right, ==, "");
+}
+
 /* ============================================================================
  * Non-AAP and unhandled packets
  * ========================================================================== */
@@ -432,6 +470,39 @@ static void test_priority_list(void)
     const char *trailing[] = { "11:22:33:44:55:66x" };
     g_assert_cmpuint(aap_build_priority_list(trailing, 1, packet), ==, 0);
     g_assert_cmpuint(aap_build_priority_list(addresses, 3, packet), ==, 0);
+}
+
+/* Renaming: LibrePods' packet. Never cut: a cut could split a character */
+static void test_rename_packet(void)
+{
+    const uint8_t expected[] = {
+        0x04, 0x00, 0x04, 0x00, 0x1A, 0x00, 0x01, 0x04, 0x00, 'P', 'o', 'd', 's',
+    };
+    uint8_t packet[64];
+
+    size_t len = aap_build_rename("Pods", packet, sizeof(packet));
+    g_assert_cmpmem(packet, len, expected, sizeof(expected));
+
+    g_assert_cmpuint(aap_build_rename("", packet, sizeof(packet)), ==, 0);
+    g_assert_cmpuint(aap_build_rename(NULL, packet, sizeof(packet)), ==, 0);
+    g_assert_cmpuint(aap_build_rename("0123456789abcdef0123456789abcdef", packet, sizeof(packet)),
+                     ==, 9 + 32);
+    g_assert_cmpuint(aap_build_rename("0123456789abcdef0123456789abcdefX", packet, sizeof(packet)),
+                     ==, 0);
+    /* 16 two-byte characters and one more byte: 33 bytes */
+    g_assert_cmpuint(aap_build_rename("\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9"
+                                      "\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9" "a",
+                                      packet, sizeof(packet)), ==, 0);
+    g_assert_cmpuint(aap_build_rename("Pods\xFF", packet, sizeof(packet)), ==, 0);
+    g_assert_cmpuint(aap_build_rename("Pods", packet, 12), ==, 0);
+
+    /* "سماعات": 6 characters, 12 bytes */
+    const char arabic[] = "\xD8\xB3\xD9\x85\xD8\xA7\xD8\xB9\xD8\xA7\xD8\xAA";
+    len = aap_build_rename(arabic, packet, sizeof(packet));
+    g_assert_cmpuint(len, ==, 9 + 12);
+    g_assert_cmpuint(packet[7], ==, 0x0C);
+    g_assert_cmpuint(packet[8], ==, 0x00);
+    g_assert_cmpmem(packet + 9, len - 9, arabic, 12);
 }
 
 static void test_unhandled_packets(void)
@@ -536,9 +607,11 @@ int main(int argc, char *argv[])
     g_test_add_func("/aap/conversation-events", test_conversation_events);
     g_test_add_func("/aap/proximity-keys", test_proximity_keys);
     g_test_add_func("/aap/metadata", test_metadata);
+    g_test_add_func("/aap/metadata-full", test_metadata_full);
     g_test_add_func("/aap/audio-source", test_audio_source);
     g_test_add_func("/aap/smart-routing", test_smart_routing);
     g_test_add_func("/aap/priority-list", test_priority_list);
+    g_test_add_func("/aap/rename-packet", test_rename_packet);
     g_test_add_func("/aap/unhandled", test_unhandled_packets);
     g_test_add_func("/aap/build-commands", test_build_commands);
     g_test_add_func("/aap/build-control-cmd", test_build_control_cmd);

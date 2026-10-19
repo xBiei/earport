@@ -4,6 +4,7 @@
  */
 
 #include "dbus_service.h"
+#include "aap_protocol.h"
 #include <string.h>
 
 /* D-Bus introspection XML */
@@ -42,6 +43,13 @@ static const gchar introspection_xml[] =
     "    <property name='AppleHandoff' type='b' access='read'/>"
     "    <property name='AudioSource' type='s' access='read'/>"
     "    <property name='Reconnecting' type='b' access='read'/>"
+    "    <property name='SerialNumber' type='s' access='read'/>"
+    "    <property name='SerialLeft' type='s' access='read'/>"
+    "    <property name='SerialRight' type='s' access='read'/>"
+    "    <property name='FirmwareVersion' type='s' access='read'/>"
+    "    <property name='FirmwareVersion2' type='s' access='read'/>"
+    "    <property name='HardwareRevision' type='s' access='read'/>"
+    "    <property name='Hosts' type='a(sbbb)' access='read'/>"
     "    <method name='SetNoiseControlMode'>"
     "      <arg type='s' name='mode' direction='in'/>"
     "    </method>"
@@ -72,6 +80,9 @@ static const gchar introspection_xml[] =
     "      <arg type='b' name='enabled' direction='in'/>"
     "    </method>"
     "    <method name='SetDisplayName'>"
+    "      <arg type='s' name='name' direction='in'/>"
+    "    </method>"
+    "    <method name='Rename'>"
     "      <arg type='s' name='name' direction='in'/>"
     "    </method>"
     "    <signal name='DeviceConnected'>"
@@ -125,6 +136,9 @@ struct DbusService {
 
     DbusDisplayNameCallback display_name_callback;
     void *display_name_user_data;
+
+    DbusRenameCallback rename_callback;
+    void *rename_user_data;
 
     DbusSettingCallback setting_callback;
     void *setting_user_data;
@@ -341,6 +355,30 @@ static GVariant *get_property(GDBusConnection *connection G_GNUC_UNUSED,
         result = g_variant_builder_end(&builder);
     } else if (g_strcmp0(property_name, "Settings") == 0) {
         result = build_settings_variant(state);
+    } else if (g_strcmp0(property_name, "SerialNumber") == 0) {
+        result = g_variant_new_string(state->info.serial);
+    } else if (g_strcmp0(property_name, "SerialLeft") == 0) {
+        result = g_variant_new_string(state->info.serial_left);
+    } else if (g_strcmp0(property_name, "SerialRight") == 0) {
+        result = g_variant_new_string(state->info.serial_right);
+    } else if (g_strcmp0(property_name, "FirmwareVersion") == 0) {
+        result = g_variant_new_string(state->info.firmware);
+    } else if (g_strcmp0(property_name, "FirmwareVersion2") == 0) {
+        result = g_variant_new_string(state->info.firmware2);
+    } else if (g_strcmp0(property_name, "HardwareRevision") == 0) {
+        result = g_variant_new_string(state->info.hardware_revision);
+    } else if (g_strcmp0(property_name, "Hosts") == 0) {
+        /* (address, connected, playing, this computer) */
+        GVariantBuilder builder;
+        g_variant_builder_init(&builder, G_VARIANT_TYPE("a(sbbb)"));
+        for (int i = 0; i < state->host_count; i++) {
+            const AirPodsHost *host = &state->hosts[i];
+            bool me = state->host_address[0] != '\0' &&
+                      g_ascii_strcasecmp(host->address, state->host_address) == 0;
+            g_variant_builder_add(&builder, "(sbbb)", host->address, host->connected,
+                                  host->playing, me);
+        }
+        result = g_variant_builder_end(&builder);
     }
 
 
@@ -471,6 +509,21 @@ static void handle_method_call(GDBusConnection *connection G_GNUC_UNUSED,
         }
 
         g_dbus_method_invocation_return_value(invocation, NULL);
+
+    } else if (g_strcmp0(method_name, "Rename") == 0) {
+        const gchar *name = NULL;
+        g_variant_get(parameters, "(&s)", &name);
+
+        g_message("D-Bus: Rename('%s')", name);
+
+        /* Never cut: a cut could split a character */
+        size_t len = strlen(name);
+        if (len == 0 || len > AAP_RENAME_MAX_NAME) {
+            return_invalid(invocation, "The name must have 1 to 32 bytes (UTF-8)");
+            return;
+        }
+        return_command_result(invocation, service->rename_callback &&
+                              service->rename_callback(name, service->rename_user_data));
 
     } else {
         g_dbus_method_invocation_return_error(invocation,
@@ -638,6 +691,14 @@ void dbus_service_set_display_name_callback(DbusService *service,
 {
     service->display_name_callback = callback;
     service->display_name_user_data = user_data;
+}
+
+void dbus_service_set_rename_callback(DbusService *service,
+                                      DbusRenameCallback callback,
+                                      void *user_data)
+{
+    service->rename_callback = callback;
+    service->rename_user_data = user_data;
 }
 
 void dbus_service_set_setting_callback(DbusService *service,

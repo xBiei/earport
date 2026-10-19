@@ -209,6 +209,16 @@ static void on_signal(GDBusConnection *connection, const char *sender, const cha
     g_ptr_array_add(f->signals, g_strdup(signal));
     if (g_strcmp0(signal, "SpeakingChanged") == 0)
         g_variant_get(parameters, "(b)", &f->speaking);
+
+    /* Each property changed, as "changed:Name" */
+    if (g_strcmp0(signal, "PropertiesChanged") == 0) {
+        GVariantIter *changed;
+        const char *name;
+        g_variant_get(parameters, "(&sa{sv}@as)", NULL, &changed, NULL);
+        while (g_variant_iter_loop(changed, "{&sv}", &name, NULL))
+            g_ptr_array_add(f->signals, g_strdup_printf("changed:%s", name));
+        g_variant_iter_free(changed);
+    }
 }
 
 static bool received(Fixture *f, const char *signal)
@@ -263,7 +273,8 @@ static void fixture_setup(Fixture *f, gconstpointer data)
         G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_CLIENT | G_DBUS_CONNECTION_FLAGS_MESSAGE_BUS_CONNECTION,
         NULL, NULL, NULL);
     g_assert_nonnull(f->client);
-    f->signal_id = g_dbus_connection_signal_subscribe(f->client, NULL, INTERFACE, NULL, OBJECT_PATH,
+    /* All interfaces: PropertiesChanged too */
+    f->signal_id = g_dbus_connection_signal_subscribe(f->client, NULL, NULL, NULL, OBJECT_PATH,
                                                       NULL, G_DBUS_SIGNAL_FLAGS_NONE,
                                                       on_signal, f, NULL);
 
@@ -593,6 +604,100 @@ static void test_disconnection(Fixture *f, gconstpointer data)
     g_assert_null(get_setting(f, "OneBudANC"));
 }
 
+/* What the metadata packet tells, kept after a disconnection */
+static void test_device_info(Fixture *f, gconstpointer data)
+{
+    (void)data;
+    static const char *const properties[] = {
+        "SerialNumber", "SerialLeft", "SerialRight",
+        "FirmwareVersion", "FirmwareVersion2", "HardwareRevision",
+    };
+    const uint8_t header[] = { 0x04, 0x00, 0x04, 0x00, 0x1D, 0x00, 0x02, 0xDD, 0x00, 0x04, 0x00 };
+    const char strings[] = "AirPods Pro\0A3048\0Apple Inc.\0SERIALCASE\0V1\0V2\0001.0.0\0"
+                           "com.apple.accessory.updater.app.71\0SERIALL\0SERIALR\0008454371";
+    uint8_t metadata[sizeof(header) + sizeof(strings)];
+
+    for (size_t i = 0; i < G_N_ELEMENTS(properties); i++) {
+        g_autofree char *value = get_string(f, properties[i]);
+        g_assert_cmpstr(value, ==, "");
+    }
+
+    connect_airpods(f);
+    memcpy(metadata, header, sizeof(header));
+    memcpy(metadata + sizeof(header), strings, sizeof(strings));
+    fake_bt_receive(metadata, sizeof(metadata));
+    for (size_t i = 0; i < G_N_ELEMENTS(properties); i++) {
+        g_autofree char *signal = g_strdup_printf("changed:%s", properties[i]);
+        RUN_UNTIL(received(f, signal));
+    }
+
+    aap_link_device_disconnected(f->link);
+    RUN_UNTIL(received(f, "DeviceDisconnected"));
+    const char *expected[] = { "SERIALCASE", "SERIALL", "SERIALR", "V1", "V2", "1.0.0" };
+    for (size_t i = 0; i < G_N_ELEMENTS(properties); i++) {
+        g_autofree char *value = get_string(f, properties[i]);
+        g_assert_cmpstr(value, ==, expected[i]);
+    }
+}
+
+/* The AirPods' hosts table (made-up addresses), this computer marked */
+static void test_hosts(Fixture *f, gconstpointer data)
+{
+    (void)data;
+    g_strlcpy(f->state.host_address, "aa:bb:cc:dd:ee:ff", sizeof(f->state.host_address));
+
+    g_autoptr(GVariant) none = get_property(f, "Hosts");
+    g_assert_cmpstr(g_variant_get_type_string(none), ==, "a(sbbb)");
+    g_assert_cmpuint(g_variant_n_children(none), ==, 0);
+
+    connect_airpods(f);
+    RECEIVE(0x04, 0x00, 0x04, 0x00, 0x2E, 0x00, 0x01, 0x01, 0x02,
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x02, 0x02,   /* Connected, playing */
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x01);  /* This computer */
+    RUN_UNTIL(received(f, "changed:Hosts"));
+
+    g_autoptr(GVariant) hosts = get_property(f, "Hosts");
+    g_assert_cmpuint(g_variant_n_children(hosts), ==, 2);
+    const char *address;
+    gboolean connected, playing, this_pc;
+    g_variant_get_child(hosts, 0, "(&sbbb)", &address, &connected, &playing, &this_pc);
+    g_assert_cmpstr(address, ==, "11:22:33:44:55:66");
+    g_assert_true(connected);
+    g_assert_true(playing);
+    g_assert_false(this_pc);
+    g_variant_get_child(hosts, 1, "(&sbbb)", &address, &connected, &playing, &this_pc);
+    g_assert_cmpstr(address, ==, "AA:BB:CC:DD:EE:FF");
+    g_assert_false(connected);
+    g_assert_false(playing);
+    g_assert_true(this_pc);
+
+    /* Only known while connected */
+    aap_link_device_disconnected(f->link);
+    RUN_UNTIL(received(f, "DeviceDisconnected"));
+    g_autoptr(GVariant) after = get_property(f, "Hosts");
+    g_assert_cmpuint(g_variant_n_children(after), ==, 0);
+}
+
+static void test_rename(Fixture *f, gconstpointer data)
+{
+    (void)data;
+
+    connect_airpods(f);
+    call_ok(f, "Rename", g_variant_new("(s)", "Pods"));
+    ASSERT_SENT(0x04, 0x00, 0x04, 0x00, 0x1A, 0x00, 0x01, 0x04, 0x00, 'P', 'o', 'd', 's');
+}
+
+/* Never cut: a cut could split a character */
+static void test_rename_rejects(Fixture *f, gconstpointer data)
+{
+    (void)data;
+
+    call_fails(f, "Rename", g_variant_new("(s)", ""), G_DBUS_ERROR_INVALID_ARGS);
+    call_fails(f, "Rename", g_variant_new("(s)", "0123456789abcdef0123456789abcdefX"),
+               G_DBUS_ERROR_INVALID_ARGS);
+    call_fails(f, "Rename", g_variant_new("(s)", "Pods"), G_DBUS_ERROR_FAILED);
+}
+
 int main(int argc, char *argv[])
 {
     g_test_init(&argc, &argv, G_TEST_OPTION_ISOLATE_DIRS, NULL);
@@ -621,6 +726,10 @@ int main(int argc, char *argv[])
     ADD("/dbus/listening-modes-remembered", test_listening_modes_remembered);
     ADD("/dbus/conversation-signals", test_conversation_signals);
     ADD("/dbus/disconnection", test_disconnection);
+    ADD("/dbus/device-info", test_device_info);
+    ADD("/dbus/hosts", test_hosts);
+    ADD("/dbus/rename", test_rename);
+    ADD("/dbus/rename-rejects", test_rename_rejects);
 
     int result = g_test_run();
 

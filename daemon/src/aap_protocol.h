@@ -36,6 +36,7 @@
 #define AAP_OPCODE_NOTIFICATIONS 0x0F
 #define AAP_OPCODE_HEAD_TRACKING 0x17
 #define AAP_OPCODE_METADATA      0x1D
+#define AAP_OPCODE_RENAME        0x1A
 #define AAP_OPCODE_CA_DETECTION  0x4B
 #define AAP_OPCODE_SET_FEATURES  0x4D
 #define AAP_OPCODE_PROXIMITY_KEYS_REQ 0x30
@@ -138,11 +139,17 @@ typedef struct {
     bool secondary_in_ear;
 } AapEarDetectionData;
 
-/* Parsed metadata */
+/* Parsed metadata, fields in the order sent; "" when missing */
 typedef struct {
     char device_name[64];
     char model_number[16];
     char manufacturer[32];
+    char serial[32];             /* Case, or the AirPods as a whole */
+    char firmware[32];           /* Version 1 */
+    char firmware2[32];          /* Version 2 */
+    char hardware_revision[32];
+    char serial_left[32];
+    char serial_right[32];
 } AapMetadata;
 
 /* Listening modes configuration (bitmask) */
@@ -206,6 +213,8 @@ typedef struct {
 /* The hosts the AirPods are connected to, with flags (0x02: the one they
  * play from); Apple calls it the TiPi table */
 #define AAP_MAX_HOSTS 4
+#define AAP_HOST_CONNECTED 0x02   /* Status */
+#define AAP_HOST_PLAYS     0x02   /* Flags */
 
 typedef struct {
     char address[18];
@@ -334,6 +343,14 @@ void aap_build_smart_routing_state(uint8_t state, uint32_t unix_time, uint8_t *b
 #define AAP_PRIORITY_LIST_MAX_HOSTS 2
 #define AAP_PRIORITY_LIST_MAX_SIZE (7 + 6 * AAP_PRIORITY_LIST_MAX_HOSTS)
 size_t aap_build_priority_list(const char *const *addresses, size_t count, uint8_t *buffer);
+
+/* Rename the AirPods, as seen by every device (LibrePods' packet):
+ * 04 00 04 00 1A 00 01 [length] 00 [UTF-8 name]. Returns the size, 0 for
+ * an empty name, one over 32 bytes or not UTF-8 (never cut), or a buffer
+ * too small. */
+#define AAP_RENAME_MAX_NAME 32
+#define AAP_RENAME_MAX_SIZE (9 + AAP_RENAME_MAX_NAME)
+size_t aap_build_rename(const char *name, uint8_t *buffer, size_t buffer_size);
 
 /**
  * Build conversational awareness command

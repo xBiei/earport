@@ -86,6 +86,24 @@ typedef struct {
     .anc_enabled = true, .adaptive_enabled = false })
 #define AIRPODS_DEFAULT_ADAPTIVE_LEVEL 50
 
+/* From the metadata packet the AirPods send on connection; "" if unknown */
+typedef struct {
+    char serial[32];             /* Case, or the AirPods as a whole */
+    char serial_left[32];
+    char serial_right[32];
+    char firmware[32];           /* Version 1 */
+    char firmware2[32];          /* Version 2 */
+    char hardware_revision[32];
+} AirPodsInfo;
+
+/* A device the AirPods are paired with, from their hosts table */
+#define AIRPODS_MAX_HOSTS 4
+typedef struct {
+    char address[18];
+    bool connected;
+    bool playing;                /* The one they play from */
+} AirPodsHost;
+
 /* Complete AirPods state */
 typedef struct {
     /* Connection info */
@@ -94,6 +112,7 @@ typedef struct {
     char *device_address;
     char *display_name;     /* Custom display name (NULL = use model name) */
     AirPodsModel model;
+    AirPodsInfo info;            /* Kept until the next metadata packet */
 
     /* Battery */
     BatteryState battery;
@@ -125,6 +144,8 @@ typedef struct {
      * too) */
     const char *audio_source;
     char host_address[18];       /* This computer's Bluetooth address */
+    AirPodsHost hosts[AIRPODS_MAX_HOSTS];  /* Only known while connected */
+    int host_count;
 
     /* Battery of the charging case from its own adverts, connected here
      * or not */

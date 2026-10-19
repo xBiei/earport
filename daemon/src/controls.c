@@ -244,6 +244,16 @@ static void on_set_display_name(const char *name, void *user_data)
     dbus_service_emit_properties_changed(c->device->dbus, "DisplayName");
 }
 
+static bool on_rename(const char *name, void *user_data)
+{
+    Controls *c = user_data;
+    uint8_t packet[AAP_RENAME_MAX_SIZE];
+    size_t len = aap_build_rename(name, packet, sizeof(packet));
+
+    g_message("Renaming the AirPods to '%s'", name);
+    return len > 0 && aap_link_send(c->link, packet, len);
+}
+
 void controls_init(Controls *c, Device *device, AapLink *link, DbusService *dbus)
 {
     c->device = device;
@@ -255,5 +265,6 @@ void controls_init(Controls *c, Device *device, AapLink *link, DbusService *dbus
     dbus_service_set_adaptive_level_callback(dbus, on_set_adaptive_level, c);
     dbus_service_set_listening_modes_callback(dbus, on_set_listening_modes, c);
     dbus_service_set_display_name_callback(dbus, on_set_display_name, c);
+    dbus_service_set_rename_callback(dbus, on_rename, c);
     dbus_service_set_setting_callback(dbus, on_set_setting, c);
 }
