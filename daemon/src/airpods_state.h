@@ -101,7 +101,6 @@ typedef struct {
 typedef struct {
     char address[18];
     bool connected;
-    bool playing;                /* The one they play from */
 } AirPodsHost;
 
 /* Complete AirPods state */
@@ -143,6 +142,8 @@ typedef struct {
      * one), "other" (an Apple device, when they take this computer for one
      * too) */
     const char *audio_source;
+    char audio_source_address[18];  /* The host that plays, "" if none: the
+                                     * hosts table flags do not tell it */
     char host_address[18];       /* This computer's Bluetooth address */
     AirPodsHost hosts[AIRPODS_MAX_HOSTS];  /* Only known while connected */
     int host_count;

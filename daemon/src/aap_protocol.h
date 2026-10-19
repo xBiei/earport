@@ -214,7 +214,6 @@ typedef struct {
  * play from); Apple calls it the TiPi table */
 #define AAP_MAX_HOSTS 4
 #define AAP_HOST_CONNECTED 0x02   /* Status */
-#define AAP_HOST_PLAYS     0x02   /* Flags */
 
 typedef struct {
     char address[18];

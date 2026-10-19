@@ -330,7 +330,6 @@ void device_handle_packet(Device *dev, const AapParsedPacket *pkt)
             AirPodsHost *mine = &dev->state->hosts[i];
             g_strlcpy(mine->address, host->address, sizeof(mine->address));
             mine->connected = host->status == AAP_HOST_CONNECTED;
-            mine->playing = (host->flags & AAP_HOST_PLAYS) != 0;
         }
         dbus_service_emit_properties_changed(dev->dbus, "Hosts");
         break;
@@ -350,6 +349,12 @@ void device_handle_packet(Device *dev, const AapParsedPacket *pkt)
             dev->state->audio_source = value;
             g_message("Audio source: %s", value);
             dbus_service_emit_properties_changed(dev->dbus, "AudioSource");
+        }
+        const char *address = source->type != AAP_AUDIO_SOURCE_NONE ? source->address : "";
+        if (g_ascii_strcasecmp(address, dev->state->audio_source_address) != 0) {
+            g_strlcpy(dev->state->audio_source_address, address,
+                      sizeof(dev->state->audio_source_address));
+            dbus_service_emit_properties_changed(dev->dbus, "Hosts");  /* Who plays */
         }
         break;
     }

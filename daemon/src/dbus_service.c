@@ -375,8 +375,10 @@ static GVariant *get_property(GDBusConnection *connection G_GNUC_UNUSED,
             const AirPodsHost *host = &state->hosts[i];
             bool me = state->host_address[0] != '\0' &&
                       g_ascii_strcasecmp(host->address, state->host_address) == 0;
+            bool playing = state->audio_source_address[0] != '\0' &&
+                           g_ascii_strcasecmp(host->address, state->audio_source_address) == 0;
             g_variant_builder_add(&builder, "(sbbb)", host->address, host->connected,
-                                  host->playing, me);
+                                  playing, me);
         }
         result = g_variant_builder_end(&builder);
     }

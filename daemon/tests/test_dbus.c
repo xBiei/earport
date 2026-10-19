@@ -230,6 +230,12 @@ static bool received(Fixture *f, const char *signal)
     return false;
 }
 
+/* Forget the signals so far, to wait for the next one of a kind */
+static void clear_received(Fixture *f)
+{
+    g_ptr_array_set_size(f->signals, 0);
+}
+
 static void assert_sent(const uint8_t *packet, size_t len)
 {
     RUN_UNTIL(fake_bt_count_sent(packet, len) > 0);
@@ -640,6 +646,53 @@ static void test_device_info(Fixture *f, gconstpointer data)
     }
 }
 
+/* Which host plays comes from the audio source packet, not the hosts table
+ * flags: real AirPods Pro 2 sent flags 0x05 (this computer) and 0x13 (an
+ * iPhone) while this computer played (made-up addresses) */
+static void test_hosts_playing_follows_audio_source(Fixture *f, gconstpointer data)
+{
+    (void)data;
+    g_strlcpy(f->state.host_address, "aa:bb:cc:dd:ee:ff", sizeof(f->state.host_address));
+    connect_airpods(f);
+    RECEIVE(0x04, 0x00, 0x04, 0x00, 0x2E, 0x00, 0x01, 0x02, 0x02,
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x02, 0x05,   /* This computer */
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x02, 0x13);  /* Another device */
+    RUN_UNTIL(received(f, "changed:Hosts"));
+
+    /* This computer plays (address least significant byte first) */
+    clear_received(f);
+    RECEIVE(0x04, 0x00, 0x04, 0x00, 0x0E, 0x00, 0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x02);
+    RUN_UNTIL(received(f, "changed:Hosts"));
+    const char *address;
+    gboolean connected, playing, this_pc;
+    g_autoptr(GVariant) here = get_property(f, "Hosts");
+    g_variant_get_child(here, 0, "(&sbbb)", &address, &connected, &playing, &this_pc);
+    g_assert_true(this_pc);
+    g_assert_true(playing);
+    g_variant_get_child(here, 1, "(&sbbb)", &address, &connected, &playing, &this_pc);
+    g_assert_false(playing);
+
+    /* The other device plays */
+    clear_received(f);
+    RECEIVE(0x04, 0x00, 0x04, 0x00, 0x0E, 0x00, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x02);
+    RUN_UNTIL(received(f, "changed:Hosts"));
+    g_autoptr(GVariant) there = get_property(f, "Hosts");
+    g_variant_get_child(there, 0, "(&sbbb)", &address, &connected, &playing, &this_pc);
+    g_assert_false(playing);
+    g_variant_get_child(there, 1, "(&sbbb)", &address, &connected, &playing, &this_pc);
+    g_assert_true(playing);
+
+    /* Nothing plays */
+    clear_received(f);
+    RECEIVE(0x04, 0x00, 0x04, 0x00, 0x0E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00);
+    RUN_UNTIL(received(f, "changed:Hosts"));
+    g_autoptr(GVariant) idle = get_property(f, "Hosts");
+    g_variant_get_child(idle, 1, "(&sbbb)", &address, &connected, &playing, &this_pc);
+    g_assert_false(playing);
+
+    aap_link_device_disconnected(f->link);
+}
+
 /* The AirPods' hosts table (made-up addresses), this computer marked */
 static void test_hosts(Fixture *f, gconstpointer data)
 {
@@ -652,7 +705,7 @@ static void test_hosts(Fixture *f, gconstpointer data)
 
     connect_airpods(f);
     RECEIVE(0x04, 0x00, 0x04, 0x00, 0x2E, 0x00, 0x01, 0x01, 0x02,
-            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x02, 0x02,   /* Connected, playing */
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x02, 0x02,   /* Connected */
             0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x01);  /* This computer */
     RUN_UNTIL(received(f, "changed:Hosts"));
 
@@ -663,7 +716,7 @@ static void test_hosts(Fixture *f, gconstpointer data)
     g_variant_get_child(hosts, 0, "(&sbbb)", &address, &connected, &playing, &this_pc);
     g_assert_cmpstr(address, ==, "11:22:33:44:55:66");
     g_assert_true(connected);
-    g_assert_true(playing);
+    g_assert_false(playing);  /* No audio source yet; the flags do not tell */
     g_assert_false(this_pc);
     g_variant_get_child(hosts, 1, "(&sbbb)", &address, &connected, &playing, &this_pc);
     g_assert_cmpstr(address, ==, "AA:BB:CC:DD:EE:FF");
@@ -728,6 +781,7 @@ int main(int argc, char *argv[])
     ADD("/dbus/disconnection", test_disconnection);
     ADD("/dbus/device-info", test_device_info);
     ADD("/dbus/hosts", test_hosts);
+    ADD("/dbus/hosts-playing-follows-audio-source", test_hosts_playing_follows_audio_source);
     ADD("/dbus/rename", test_rename);
     ADD("/dbus/rename-rejects", test_rename_rejects);
 
