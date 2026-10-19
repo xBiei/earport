@@ -46,11 +46,14 @@ static void test_defaults(void)
 
     g_assert_true(config_load(&config));
     g_assert_cmpint(config.ear_pause_mode, ==, 1);
-    g_assert_false(config.auto_connect);
+    /* xhypr fork: switching with Apple devices is the reason to run it */
+    g_assert_true(config.auto_connect);
+    g_assert_true(config.apple_handoff);
 
     /* Written on first start */
     g_autofree char *contents = read_config_file("daemon.conf");
-    g_assert_nonnull(strstr(contents, "auto_connect=false"));
+    g_assert_nonnull(strstr(contents, "auto_connect=true"));
+    g_assert_nonnull(strstr(contents, "apple_handoff=true"));
 }
 
 static void test_save_load(void)

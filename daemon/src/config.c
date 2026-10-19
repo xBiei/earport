@@ -53,8 +53,9 @@ static bool ensure_config_dir(void)
 void config_get_defaults(EarPortConfig *config)
 {
     config->ear_pause_mode = 1;  /* EAR_PAUSE_ONE_OUT */
-    config->auto_connect = false;
-    config->apple_handoff = false;
+    /* xhypr fork: on by default, switching with Apple devices is why it runs */
+    config->auto_connect = true;
+    config->apple_handoff = true;
 }
 
 bool config_load(EarPortConfig *config)

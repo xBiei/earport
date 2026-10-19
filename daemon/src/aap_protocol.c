@@ -198,6 +198,7 @@ AapParseResult aap_parse_noise_control(const uint8_t *data, size_t len, NoiseCon
         *mode = NOISE_CONTROL_ADAPTIVE;
         break;
     default:
+        g_message("Unknown noise control mode byte 0x%02X, shown as off", mode_byte);
         *mode = NOISE_CONTROL_OFF;
         break;
     }
