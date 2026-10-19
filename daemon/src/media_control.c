@@ -22,8 +22,9 @@ struct MediaControl {
     GDBusConnection *connection;
     EarPauseMode ear_pause_mode;
 
-    /* Track which players we paused */
-    GList *paused_players;     /* List of player names (strings) that we paused */
+    /* Track which players we paused, by unique bus name: another instance
+     * of the same app may take the well-known name meanwhile */
+    GList *paused_players;     /* Unique names (strings) of the players we paused */
     GList *handoff_players;    /* Paused because another device took the AirPods */
     guint resume_count;        /* Resumes so far, to spot pauses that land after one */
     GCancellable *cancellable; /* Pending player calls, cancelled on free */
@@ -37,10 +38,14 @@ struct MediaControl {
     guint playback_subscription_id;
     MediaPlaybackStartedCallback playback_started_callback;
     void *playback_started_user_data;
+    /* Sender -> last PlaybackStatus, so that a repeated "Playing" is not a
+     * start. shortcut: players that quit stay in it (a few bytes each);
+     * drop them on NameOwnerChanged if it ever matters */
+    GHashTable *player_status;
 };
 
 static void on_player_properties_changed(GDBusConnection *connection G_GNUC_UNUSED,
-                                         const gchar *sender_name G_GNUC_UNUSED,
+                                         const gchar *sender_name,
                                          const gchar *object_path G_GNUC_UNUSED,
                                          const gchar *interface_name G_GNUC_UNUSED,
                                          const gchar *signal_name G_GNUC_UNUSED,
@@ -55,9 +60,15 @@ static void on_player_properties_changed(GDBusConnection *connection G_GNUC_UNUS
         return;
 
     g_variant_get(parameters, "(&s@a{sv}@as)", NULL, &changed, NULL);
-    if (g_variant_lookup(changed, "PlaybackStatus", "&s", &status) &&
-        g_strcmp0(status, "Playing") == 0)
-        mc->playback_started_callback(mc->playback_started_user_data);
+    if (g_variant_lookup(changed, "PlaybackStatus", "&s", &status)) {
+        /* Players say "Playing" again when the audio route changes: only a
+         * change to it is a start (a sender never seen counts as one) */
+        const gchar *prev = g_hash_table_lookup(mc->player_status, sender_name);
+        bool started = g_strcmp0(prev, "Playing") != 0 && g_strcmp0(status, "Playing") == 0;
+        g_hash_table_replace(mc->player_status, g_strdup(sender_name), g_strdup(status));
+        if (started)
+            mc->playback_started_callback(mc->playback_started_user_data);
+    }
     g_variant_unref(changed);
 }
 
@@ -69,6 +80,7 @@ static void on_player_properties_changed(GDBusConnection *connection G_GNUC_UNUS
 typedef struct {
     MediaControl *mc;
     char *player;
+    char *owner;               /* Unique name of the player's connection */
     guint resume_count;        /* mc->resume_count when the pause started */
     bool for_handoff;          /* Not resumed with the ears */
 } PauseOp;
@@ -76,6 +88,7 @@ typedef struct {
 static void pause_op_free(PauseOp *op)
 {
     g_free(op->player);
+    g_free(op->owner);
     g_free(op);
 }
 
@@ -131,20 +144,20 @@ static void on_pause_done(GObject *source, GAsyncResult *res, gpointer user_data
     g_variant_unref(reply);
 
     MediaControl *mc = op->mc;
-    g_message("Paused media player: %s", op->player);
+    g_message("Paused media player: %s (%s)", op->player, op->owner);
 
     if (op->for_handoff) {
-        if (g_list_find_custom(mc->handoff_players, op->player, (GCompareFunc)g_strcmp0) == NULL)
-            mc->handoff_players = g_list_append(mc->handoff_players, g_strdup(op->player));
+        if (g_list_find_custom(mc->handoff_players, op->owner, (GCompareFunc)g_strcmp0) == NULL)
+            mc->handoff_players = g_list_append(mc->handoff_players, g_strdup(op->owner));
         pause_op_free(op);
         return;
     }
 
     if (mc->resume_count != op->resume_count) {
         /* The pods went back in while the player was being paused */
-        player_play(mc, op->player);
-    } else if (g_list_find_custom(mc->paused_players, op->player, (GCompareFunc)g_strcmp0) == NULL) {
-        mc->paused_players = g_list_append(mc->paused_players, g_strdup(op->player));
+        player_play(mc, op->owner);
+    } else if (g_list_find_custom(mc->paused_players, op->owner, (GCompareFunc)g_strcmp0) == NULL) {
+        mc->paused_players = g_list_append(mc->paused_players, g_strdup(op->owner));
     }
     pause_op_free(op);
 }
@@ -171,9 +184,33 @@ static void on_status_done(GObject *source, GAsyncResult *res, gpointer user_dat
 
     /* Only the players actually playing are paused, and later resumed */
     if (playing && (op->for_handoff || op->mc->resume_count == op->resume_count))
-        player_call(op->mc, op->player, "Pause", on_pause_done, op);
+        player_call(op->mc, op->owner, "Pause", on_pause_done, op);
     else
         pause_op_free(op);
+}
+
+static void on_owner_done(GObject *source, GAsyncResult *res, gpointer user_data)
+{
+    PauseOp *op = user_data;
+    GError *error = NULL;
+    GVariant *reply = g_dbus_connection_call_finish(G_DBUS_CONNECTION(source), res, &error);
+
+    if (reply == NULL) {
+        if (!call_cancelled(error))
+            g_debug("Failed to get the owner of %s: %s", op->player, error->message);
+        g_error_free(error);
+        pause_op_free(op);
+        return;
+    }
+    g_variant_get(reply, "(s)", &op->owner);
+    g_variant_unref(reply);
+
+    /* From now on, only this connection: the one paused is the one resumed */
+    MediaControl *mc = op->mc;
+    g_dbus_connection_call(mc->connection, op->owner, MPRIS_DBUS_PATH, DBUS_PROPERTIES_INTERFACE,
+                           "Get", g_variant_new("(ss)", MPRIS_PLAYER_INTERFACE, "PlaybackStatus"),
+                           G_VARIANT_TYPE("(v)"), G_DBUS_CALL_FLAGS_NONE,
+                           PLAYER_CALL_TIMEOUT_MS, mc->cancellable, on_status_done, op);
 }
 
 /* What to do with the players found playing */
@@ -209,10 +246,10 @@ static void on_list_names_done(GObject *source, GAsyncResult *res, gpointer user
         op->player = g_strdup(name);
         op->resume_count = mc->resume_count;
         op->for_handoff = request->for_handoff;
-        g_dbus_connection_call(mc->connection, name, MPRIS_DBUS_PATH, DBUS_PROPERTIES_INTERFACE,
-                               "Get", g_variant_new("(ss)", MPRIS_PLAYER_INTERFACE, "PlaybackStatus"),
-                               G_VARIANT_TYPE("(v)"), G_DBUS_CALL_FLAGS_NONE,
-                               PLAYER_CALL_TIMEOUT_MS, mc->cancellable, on_status_done, op);
+        g_dbus_connection_call(mc->connection, "org.freedesktop.DBus", "/org/freedesktop/DBus",
+                               "org.freedesktop.DBus", "GetNameOwner", g_variant_new("(s)", name),
+                               G_VARIANT_TYPE("(s)"), G_DBUS_CALL_FLAGS_NONE,
+                               PLAYER_CALL_TIMEOUT_MS, mc->cancellable, on_owner_done, op);
     }
     g_variant_iter_free(iter);
     g_variant_unref(reply);
@@ -251,6 +288,7 @@ MediaControl *media_control_new(void)
 
     mc->ear_pause_mode = EAR_PAUSE_ONE_OUT;  /* Default: pause when one pod is removed */
     mc->cancellable = g_cancellable_new();
+    mc->player_status = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     mc->paused_players = NULL;
     mc->prev_state_valid = false;
 
@@ -282,6 +320,7 @@ void media_control_free(MediaControl *mc)
     /* Free paused players list */
     g_list_free_full(mc->paused_players, g_free);
     g_list_free_full(mc->handoff_players, g_free);
+    g_hash_table_unref(mc->player_status);
 
     if (mc->connection) {
         if (mc->playback_subscription_id > 0)
