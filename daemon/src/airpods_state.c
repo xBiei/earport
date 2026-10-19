@@ -25,7 +25,7 @@ void airpods_state_init(AirPodsState *state)
     state->battery.case_battery.available = false;
     state->listening_minutes_left = -1;
 
-    state->noise_control_mode = NOISE_CONTROL_OFF;
+    state->noise_control_mode = NOISE_CONTROL_UNKNOWN;
     state->conversational_awareness = false;
     state->adaptive_noise_level = AIRPODS_DEFAULT_ADAPTIVE_LEVEL;
     state->listening_modes = AIRPODS_DEFAULT_LISTENING_MODES;
@@ -71,7 +71,7 @@ void airpods_state_reset(AirPodsState *state)
     state->battery.case_battery.available = false;
     state->listening_minutes_left = -1;
 
-    state->noise_control_mode = NOISE_CONTROL_OFF;
+    state->noise_control_mode = NOISE_CONTROL_UNKNOWN;
     state->conversational_awareness = false;
     state->adaptive_noise_level = AIRPODS_DEFAULT_ADAPTIVE_LEVEL;
     /* Not announced: the next AirPods must not inherit these */
@@ -288,6 +288,8 @@ const char *airpods_model_to_string(AirPodsModel model)
 const char *noise_control_mode_to_string(NoiseControlMode mode)
 {
     switch (mode) {
+    case NOISE_CONTROL_UNKNOWN:
+        return "";
     case NOISE_CONTROL_OFF:
         return "off";
     case NOISE_CONTROL_ANC:

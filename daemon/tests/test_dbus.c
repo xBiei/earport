@@ -594,6 +594,40 @@ static void test_conversation_signals(Fixture *f, gconstpointer data)
     RUN_UNTIL(!f->speaking);
 }
 
+/* A disconnect resets the session values and announces each one, so a
+ * client does not show the old battery or mode as live at the next
+ * connection; the mode is unknown ("") until the AirPods report it */
+static void test_disconnect_announces_reset(Fixture *f, gconstpointer data)
+{
+    (void)data;
+    g_autofree char *before = get_string(f, "NoiseControlMode");
+    g_assert_cmpstr(before, ==, "");
+
+    connect_airpods(f);
+    RUN_UNTIL(received(f, "EarDetectionChanged"));
+    g_autofree char *mode = get_string(f, "NoiseControlMode");
+    g_assert_cmpstr(mode, ==, "anc");
+
+    clear_received(f);
+    aap_link_device_disconnected(f->link);
+    RUN_UNTIL(received(f, "DeviceDisconnected"));
+    static const char *const reset[] = {
+        "BatteryLeft", "BatteryRight", "BatteryCase", "ChargingLeft", "ChargingRight",
+        "ChargingCase", "LeftInEar", "RightInEar", "ListeningTimeRemaining",
+        "NoiseControlMode", "ConversationalAwareness", "AdaptiveNoiseLevel",
+        "ListeningModeOff", "ListeningModeTransparency", "ListeningModeANC",
+        "ListeningModeAdaptive", "DeviceModel", "IsHeadphones", "SupportsANC",
+        "SupportsAdaptive",
+    };
+    for (gsize i = 0; i < G_N_ELEMENTS(reset); i++) {
+        g_autofree char *name = g_strdup_printf("changed:%s", reset[i]);
+        RUN_UNTIL(received(f, name));
+    }
+    g_assert_cmpint(get_int(f, "BatteryLeft"), ==, -1);
+    g_autofree char *after = get_string(f, "NoiseControlMode");
+    g_assert_cmpstr(after, ==, "");
+}
+
 /* Lost while speaking: clients get the volume back */
 static void test_disconnection(Fixture *f, gconstpointer data)
 {
@@ -781,6 +815,7 @@ int main(int argc, char *argv[])
     ADD("/dbus/disconnection", test_disconnection);
     ADD("/dbus/device-info", test_device_info);
     ADD("/dbus/hosts", test_hosts);
+    ADD("/dbus/disconnect-announces-reset", test_disconnect_announces_reset);
     ADD("/dbus/hosts-playing-follows-audio-source", test_hosts_playing_follows_audio_source);
     ADD("/dbus/rename", test_rename);
     ADD("/dbus/rename-rejects", test_rename_rejects);

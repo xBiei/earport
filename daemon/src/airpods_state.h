@@ -33,6 +33,7 @@ typedef enum {
 
 /* Noise control modes */
 typedef enum {
+    NOISE_CONTROL_UNKNOWN = 0,   /* Not reported since the connection */
     NOISE_CONTROL_OFF = 1,
     NOISE_CONTROL_ANC = 2,
     NOISE_CONTROL_TRANSPARENCY = 3,
